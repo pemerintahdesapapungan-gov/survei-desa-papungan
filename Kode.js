@@ -1,3 +1,6 @@
+// TEST UPDATE OTOMATIS DARI GITHUB
+// Survei Desa Papungan
+
 /** Survei Desa Papungan. Fungsi berakhiran _ hanya untuk server/editor. */
 function doGet() {
   return HtmlService.createTemplateFromFile('Index').evaluate()
