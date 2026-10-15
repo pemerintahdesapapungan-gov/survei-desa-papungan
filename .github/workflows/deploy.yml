@@ -1,0 +1,75 @@
+
+name: Deploy Survei Desa Papungan
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: survei-desa-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Sinkronisasi Google Apps Script
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Ambil kode dari GitHub
+        uses: actions/checkout@v4
+
+      - name: Siapkan Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Instal Google Clasp
+        run: npm install -g @google/clasp@3
+
+      - name: Periksa file Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f appsscript.json
+          node -e "JSON.parse(require('fs').readFileSync('appsscript.json', 'utf8'))"
+          echo "File manifest ditemukan dan valid"
+
+      - name: Konfigurasi autentikasi Google
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$CLASPRC_JSON" ] || [ -z "$SCRIPT_ID" ]; then
+            echo "::error::Secret CLASPRC_JSON atau SCRIPT_ID belum tersedia"
+            exit 1
+          fi
+
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          chmod 600 "$HOME/.clasprc.json"
+
+          node -e "
+            require('fs').writeFileSync(
+              '.clasp.json',
+              JSON.stringify({
+                scriptId: process.env.SCRIPT_ID.trim()
+              }, null, 2)
+            );
+          "
+
+      - name: Periksa file yang akan dikirim
+        run: clasp show-file-status
+
+      - name: Perbarui kode Google Apps Script
+        run: clasp push --force
+
+      - name: Selesai
+        run: echo "Sinkronisasi Google Apps Script berhasil!"
