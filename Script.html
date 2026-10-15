@@ -1,0 +1,95 @@
+<script>
+'use strict';
+const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let config=null, survey='A', token='', stars=0, drafts={A:{},B:{}}, editConfig=null, reportPage=0, lastSurvey='A', reportBusy=false;
+const titles={A:'Kuesioner Survei Perilaku Baik Masyarakat Desa Papungan',B:'Kuesioner Survei Kepuasan Terhadap Pelayanan Pemerintah Desa Papungan'};
+const fmt=(v,d=1)=>v===null||v===undefined?'—':Number(v).toLocaleString('id-ID',{maximumFractionDigits:d,minimumFractionDigits:d});
+function rpc(fn,...args){return new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn](...args));}
+function notice(message,bad=false){$('notice').innerHTML=message?`<div class="notice ${bad?'bad':''}">${esc(message)}</div>`:'';}
+function err(e){const m=e.message||String(e);notice(m,true);if(/Sesi admin|Silakan login admin/.test(m))exitAdmin(false);}
+function busy(b,value,label){b.disabled=value;if(label)b.textContent=label;}
+function uuid(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx').replace(/[xy]/g,c=>{let r=Math.random()*16|0;return(c==='x'?r:(r&3|8)).toString(16);});}
+function requestKey(s){let key='papungan-send-'+s;try{let id=sessionStorage.getItem(key);if(!id){id=uuid();sessionStorage.setItem(key,id);}return id;}catch(e){return drafts[s].requestId||(drafts[s].requestId=uuid());}}
+function resetRequest(s){try{sessionStorage.removeItem('papungan-send-'+s);}catch(e){}delete drafts[s].requestId;}
+function renderSurvey(s){
+ if(!config)return;survey=s;$('surveyTitle').textContent=titles[s];$('surveyTag').textContent='SURVEI '+s;
+ ['A','B'].forEach(x=>$('tab'+x).classList.toggle('selected',x===s));$('feedback').hidden=s!=='B';
+ let group='',n=0;
+ $('questions').innerHTML=config.questions.filter(q=>q.survey===s).map(q=>{
+  let heading=q.group!==group?`<h3 class="group-heading">${esc(q.group)}</h3>`:'';group=q.group;n++;
+  return heading+`<fieldset class="question"><legend>${n}. ${esc(q.text)}</legend><div class="choices">${q.options.map((o,i)=>`<label class="choice"><input type="radio" name="${esc(q.id)}" value="${i}" ${drafts[s][q.id]===i?'checked':''} required><span>${esc(o.label)}</span></label>`).join('')}</div></fieldset>`;
+ }).join('');
+ $('questions').querySelectorAll('input').forEach(input=>input.addEventListener('change',()=>{drafts[survey][input.name]=Number(input.value);progress();}));
+ $('submitBtn').disabled=false;progress();renderStars();
+}
+function progress(){if(!config)return;const qs=config.questions.filter(q=>q.survey===survey),n=qs.filter(q=>Number.isInteger(drafts[survey][q.id])).length;$('progressBar').style.width=(qs.length?n/qs.length*100:0)+'%';$('progressText').textContent=`${n} dari ${qs.length} pertanyaan dijawab`;}
+function renderStars(){
+ $('stars').innerHTML=[1,2,3,4,5].map(n=>`<button type="button" role="radio" aria-checked="${stars===n}" aria-label="${n} bintang" class="${n<=stars?'on':''}" data-star="${n}">★</button>`).join('');
+ $('stars').querySelectorAll('button').forEach(b=>{b.onclick=()=>{stars=Number(b.dataset.star);renderStars();$('stars').children[stars-1].focus();};b.onkeydown=e=>{if(['ArrowRight','ArrowUp','ArrowLeft','ArrowDown'].includes(e.key)){e.preventDefault();stars=Math.max(1,Math.min(5,Number(b.dataset.star)+(e.key==='ArrowRight'||e.key==='ArrowUp'?1:-1)));renderStars();$('stars').children[stars-1].focus();}};});
+ $('starLabel').textContent=stars?`${stars} bintang · ${['Sangat kurang','Kurang','Cukup','Baik','Sangat baik'][stars-1]}`:'Belum dipilih';
+}
+$('tabA').onclick=()=>renderSurvey('A');$('tabB').onclick=()=>renderSurvey('B');
+$('anonymous').onchange=()=>{let anon=$('anonymous').checked;$('identityFields').hidden=anon;if(anon)['name','address','age','gender'].forEach(x=>$(x).value='');};
+$('surveyForm').onsubmit=async e=>{
+ e.preventDefault();if(!config)return;
+ if(survey==='B'&&!stars){notice('Pilih penilaian 1–5 bintang sebelum mengirim.',true);$('stars').scrollIntoView({behavior:'smooth',block:'center'});$('stars').children[0].focus();return;}
+ if($('age').value&&!$('age').checkValidity()){$('age').reportValidity();return;}
+ const s=survey,b=$('submitBtn');busy(b,true,'Menyimpan…');notice('');
+ const answers={};config.questions.filter(q=>q.survey===s).forEach(q=>answers[q.id]=drafts[s][q.id]);
+ try{
+  const result=await rpc('submitSurvey',{survey:s,revision:config.revision,requestId:requestKey(s),anonymous:$('anonymous').checked,
+   person:{name:$('name').value,address:$('address').value,age:$('age').value,gender:$('gender').value},answers,stars,
+   criticism:$('criticism').value,suggestion:$('suggestion').value});
+  resetRequest(s);drafts[s]={};lastSurvey=s;$('publicView').hidden=true;$('thanks').hidden=false;
+  $('receipt').textContent=`Survei ${s} · Nomor penerimaan: ${result.id}`;$('nextSurvey').hidden=s==='B';
+  $('nextHint').textContent=s==='A'?'Silakan lanjut mengisi Survei B tentang kepuasan pelayanan. Identitas Anda tetap digunakan.':'Seluruh jawaban Survei B berhasil diterima.';
+  if(s==='B'){stars=0;$('criticism').value='';$('suggestion').value='';}
+  $('thanks').scrollIntoView({behavior:'smooth',block:'start'});
+ }catch(e){err(e);}finally{busy(b,false,'Kirim jawaban');}
+};
+$('nextSurvey').onclick=()=>{$('thanks').hidden=true;$('publicView').hidden=false;renderSurvey('B');};
+$('newRespondent').onclick=()=>{['name','address','age','gender','criticism','suggestion'].forEach(x=>$(x).value='');$('anonymous').checked=false;$('identityFields').hidden=false;stars=0;drafts={A:{},B:{}};resetRequest('A');resetRequest('B');$('thanks').hidden=true;$('publicView').hidden=false;renderSurvey('A');notice('');};
+$('adminOpen').onclick=()=>{$('loginError').textContent='';$('loginDialog').showModal();$('password').focus();};$('cancelLogin').onclick=()=>{$('password').value='';$('loginDialog').close();};$('loginDialog').addEventListener('cancel',()=>{$('password').value='';});
+$('loginForm').onsubmit=async e=>{e.preventDefault();busy($('loginBtn'),true,'Memeriksa…');try{const r=await rpc('adminLogin',$('password').value);token=r.token;$('password').value='';$('loginDialog').close();$('publicView').hidden=true;$('thanks').hidden=true;$('adminView').hidden=false;$('adminOpen').hidden=true;notice('');await loadReport(0);}catch(e){$('loginError').textContent=e.message||String(e);}finally{busy($('loginBtn'),false,'Masuk');}};
+function exitAdmin(refresh=true){token='';editConfig=null;$('reportContent').innerHTML='';$('questionEditor').innerHTML='';$('adminView').hidden=true;$('publicView').hidden=false;$('adminOpen').hidden=false;$('newPassword').value='';$('repeatPassword').value='';setPanel('reports');if(refresh)rpc('getPublicConfig').then(c=>{config=c;renderSurvey(survey);}).catch(err);}
+$('logout').onclick=async()=>{const t=token;exitAdmin();try{await rpc('adminLogout',t);}catch(e){/* expired sessions already have no access */}};
+function setPanel(p){['reports','editor','settings'].forEach(n=>$(n+'Panel').hidden=n!==p);document.querySelectorAll('[data-panel]').forEach(b=>b.classList.toggle('selected',b.dataset.panel===p));}
+ document.querySelectorAll('[data-panel]').forEach(b=>b.onclick=async()=>{setPanel(b.dataset.panel);if(b.dataset.panel==='editor'&&!editConfig)await loadEditor();});
+function filter(){return {from:$('dateFrom').value,to:$('dateTo').value};}
+function bar(label,value,max=100,right=''){let width=max?Math.max(0,Math.min(100,value/max*100)):0;return `<div class="bar-row"><div class="bar-label"><span>${esc(label)}</span><strong>${esc(right)}</strong></div><div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div></div>`;}
+async function loadReport(page=0){
+ if(reportBusy||!token)return;const t=token,s=$('reportSurvey').value;reportBusy=true;busy($('loadReport'),true,'Memuat…');notice('');
+ try{let r=await rpc('adminGetReport',t,s,filter(),page);if(t!==token)return;reportPage=r.page;renderReport(r,s);}catch(e){err(e);}finally{reportBusy=false;busy($('loadReport'),false,'Tampilkan');}
+}
+$('loadReport').onclick=()=>loadReport(0);$('reportSurvey').onchange=()=>loadReport(0);
+function renderReport(r,s){
+ const x=r.summary, idx=x.index, groups=x.groups, scored=x.questions.filter(q=>q.index!==null).sort((a,b)=>a.index-b.index),lowest=scored[0];
+ const rev=x.revisions.length>1?' Data mencakup beberapa revisi; bandingkan hasil dengan memperhatikan perubahan instrumen.':'';
+ let html=`<h3>${esc(titles[s])}</h3><p class="muted">Periode ${esc($('dateFrom').value||'awal pencatatan')} — ${esc($('dateTo').value||'terbaru')} · Waktu WIB</p><div class="stats"><div class="card stat"><small>Jawaban masuk</small><strong>${x.count}</strong></div><div class="card stat"><small>Rerata skor · 1–5</small><strong>${fmt(x.mean,2)}</strong></div><div class="card stat"><small>Indeks deskriptif · 0–100</small><strong>${fmt(idx)}</strong></div><div class="card stat"><small>${s==='B'?'Rerata bintang · 1–5':'Tanpa identitas'}</small><strong>${s==='B'?fmt(x.starMean,2):x.anonymous}</strong></div></div>`;
+ html+=`<div class="card"><h3>Analisis hasil</h3><p>${x.count?`${x.count} jawaban tercatat, termasuk ${x.anonymous} tanpa identitas. ${lowest?`Prioritas peninjauan adalah pertanyaan ${esc(lowest.id)} (revisi ${lowest.revision}) dengan indeks ${fmt(lowest.index)}: “${esc(lowest.text)}”.`:'Belum ada jawaban dengan skor untuk dianalisis.'}`:'Belum ada jawaban pada periode ini.'}</p><div class="method">Skor pilihan 1–5. “Tidak mengetahui” pada pilihan F tidak masuk rerata; frekuensinya tetap ditampilkan. Indeks = (rerata − 1) ÷ 4 × 100. Indeks keseluruhan memakai rerata skor tiap responden; kelompok memakai rerata jawaban yang dinilai. Indeks ini adalah ringkasan deskriptif internal, bukan IKM resmi atau bukti kejadian korupsi.${esc(rev)}</div></div>`;
+ html+=`<div class="charts"><div class="card"><h3>Indeks menurut kelompok & revisi</h3>${groups.length?groups.map(g=>bar(g.group+' · R'+g.revision,g.index||0,100,fmt(g.index)+' / 100 · n='+g.valid)).join(''):'<p class="empty">Belum ada data.</p>'}</div><div class="card"><h3>Jumlah jawaban per hari</h3>${Object.keys(x.daily).length?Object.keys(x.daily).sort().map(day=>bar(day,x.daily[day],Math.max(...Object.values(x.daily)),x.daily[day]+' jawaban')).join(''):'<p class="empty">Belum ada data.</p>'}</div></div>`;
+ if(s==='B')html+=`<div class="card"><h3>Distribusi penilaian bintang</h3><p class="muted">${x.starN} penilaian · Rerata ${fmt(x.starMean,2)} bintang</p>${x.starCounts.map((n,i)=>bar((i+1)+' bintang',n,x.starN,n+' ('+(x.starN?fmt(n/x.starN*100):'0')+'%)')).join('')}</div>`;
+ html+=`<div class="card" style="margin-top:20px"><h3>Rekap setiap pertanyaan</h3><p class="muted">n = jumlah jawaban yang dinilai. Pertanyaan yang berubah dipisahkan menurut revisi.</p><div class="table-wrap"><table><thead><tr><th>ID / Revisi</th><th>Pertanyaan</th><th>Total</th><th>n</th><th>Tidak dinilai</th><th>Rerata</th><th>Indeks</th></tr></thead><tbody>${x.questions.map(q=>`<tr><td>${esc(q.id)} / R${q.revision}</td><td class="wide">${esc(q.text)}</td><td>${q.total}</td><td>${q.valid}</td><td>${q.unknown}</td><td>${fmt(q.mean,2)}</td><td>${fmt(q.index)}</td></tr>`).join('')}</tbody></table></div><h3>Grafik distribusi pilihan jawaban</h3>${x.questions.map(q=>`<details><summary>${esc(q.id)} · R${q.revision} — ${esc(q.text)}</summary>${q.options.map((o,i)=>bar(o.label,q.counts[i],q.total,q.counts[i]+' ('+fmt(q.total?q.counts[i]/q.total*100:0)+'%)')).join('')}</details>`).join('')||'<p class="empty">Belum ada data.</p>'}</div>`;
+ html+=`<div class="card" style="margin-top:20px"><h3>Data responden & jawaban</h3><p class="muted">Menampilkan maksimal 20 responden per halaman. CSV mencakup seluruh data sesuai filter.</p><div class="table-wrap"><table><thead><tr><th>Waktu WIB</th><th>Nama / Identitas</th><th>Revisi</th>${s==='B'?'<th>Bintang</th><th>Kritik & saran</th>':''}<th>Jawaban</th></tr></thead><tbody>${r.rows.map((row,i)=>`<tr><td>${esc(row.time.replace('T',' ').replace('+07:00',''))}<br><small>${esc(row.id)}</small></td><td>${esc(row.name||'Tidak diisi')}<br><small>${esc(row.address||'Alamat tidak diisi')}<br>Umur: ${esc(row.age||'—')} · ${esc(row.gender||'—')}${row.anonymous?'<br><span class="tag">Tanpa identitas</span>':''}</small></td><td>R${row.revision}</td>${s==='B'?`<td>${row.stars} ★</td><td class="wide"><strong>Kritik:</strong> ${esc(row.criticism||'—')}<br><strong>Saran:</strong> ${esc(row.suggestion||'—')}</td>`:''}<td><details><summary>Lihat ${row.answers.length} jawaban</summary>${row.answers.map(a=>`<p><strong>${esc(a.id)}:</strong> ${esc(a.text)}<br>${esc(a.label)} · Skor ${a.score===null?'tidak dinilai':a.score}</p>`).join('')}</details></td></tr>`).join('')}</tbody></table></div><div class="toolbar pager"><button id="prevPage" class="outline" ${r.page<=0?'disabled':''}>Sebelumnya</button><span>Halaman ${r.pages?r.page+1:0} / ${r.pages}</span><button id="nextPage" class="outline" ${r.page+1>=r.pages?'disabled':''}>Berikutnya</button></div></div>`;
+ $('reportContent').innerHTML=html;$('prevPage').onclick=()=>loadReport(reportPage-1);$('nextPage').onclick=()=>loadReport(reportPage+1);
+}
+$('exportCsv').onclick=async()=>{const b=$('exportCsv');busy(b,true,'Menyiapkan…');try{const csv=await rpc('adminExportCsv',token,$('reportSurvey').value,filter()),url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download='Rekap_Papungan_'+$('reportSurvey').value+'_'+new Date().toISOString().slice(0,10)+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}catch(e){err(e);}finally{busy(b,false,'Unduh CSV');}};
+$('printReport').onclick=()=>window.print();
+async function loadEditor(){const t=token;busy($('reloadQuestions'),true);try{const c=await rpc('adminGetQuestions',t);if(t!==token)return;editConfig=c;renderEditor();}catch(e){err(e);}finally{busy($('reloadQuestions'),false);}}
+function renderEditor(){
+ if(!editConfig)return;let s=$('editSurvey').value;
+ $('questionEditor').innerHTML=`<p class="muted">Revisi aktif: ${editConfig.revision} · Perubahan belum disimpan sampai tombol Simpan diklik.</p>`+editConfig.questions.map((q,i)=>q.survey!==s?'':`<section class="edit-question" data-index="${i}"><div class="toolbar"><strong>${esc(q.id)}</strong><label><input type="checkbox" data-field="active" ${q.active?'checked':''}> Aktif</label></div><label>Kelompok<input data-field="group" value="${esc(q.group)}" maxlength="180"></label><label>Pertanyaan<textarea data-field="text" maxlength="1000" rows="3">${esc(q.text)}</textarea></label><p class="muted">Pilihan jawaban dan skor (1 = paling kurang baik, 5 = paling baik)</p>${q.options.map((o,j)=>`<div class="edit-option" data-option="${j}"><input aria-label="Pilihan ${j+1}" data-option-field="label" maxlength="200" value="${esc(o.label)}"><select aria-label="Skor pilihan ${j+1}" data-option-field="score">${[5,4,3,2,1,null].map(v=>`<option value="${v===null?'null':v}" ${v===o.score?'selected':''}>${v===null?'Tidak dinilai':v}</option>`).join('')}</select><button type="button" data-remove="${j}" aria-label="Hapus pilihan ${j+1}">×</button></div>`).join('')}<button class="outline" type="button" data-add-option="true">+ Pilihan jawaban</button></section>`).join('');
+ $('questionEditor').querySelectorAll('[data-index]').forEach(section=>{
+  let q=editConfig.questions[Number(section.dataset.index)];
+  section.querySelectorAll('[data-field]').forEach(el=>el.oninput=()=>q[el.dataset.field]=el.type==='checkbox'?el.checked:el.value);
+  section.querySelectorAll('[data-option-field]').forEach(el=>el.oninput=()=>{const o=q.options[Number(el.closest('[data-option]').dataset.option)];o[el.dataset.optionField]=el.dataset.optionField==='score'?(el.value==='null'?null:Number(el.value)):el.value;});
+  section.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{if(q.options.length<=2){notice('Minimal dua pilihan jawaban.',true);return;}q.options.splice(Number(b.dataset.remove),1);renderEditor();});
+  section.querySelector('[data-add-option]').onclick=()=>{if(q.options.length>=8){notice('Maksimal 8 pilihan.',true);return;}q.options.push({label:'',score:null});renderEditor();};
+ });
+}
+$('editSurvey').onchange=renderEditor;$('reloadQuestions').onclick=()=>{if(!editConfig||confirm('Muat ulang akan membuang perubahan yang belum disimpan. Lanjutkan?'))loadEditor();};
+$('addQuestion').onclick=()=>{if(!editConfig)return;let s=$('editSurvey').value;editConfig.questions.push({id:s+'_'+uuid().slice(0,8),survey:s,group:s==='A'?'Kelompok baru':'Kepuasan Pelayanan',text:'',options:[{label:'Sangat baik',score:5},{label:'Baik',score:4},{label:'Cukup baik',score:3},{label:'Kurang baik',score:2},{label:'Tidak baik',score:1}],active:true});renderEditor();$('questionEditor').lastElementChild.scrollIntoView({behavior:'smooth'});};
+$('saveQuestions').onclick=async()=>{if(!editConfig)return;const b=$('saveQuestions');busy(b,true,'Menyimpan…');try{const r=await rpc('adminSaveQuestions',token,editConfig.revision,editConfig.questions);editConfig.revision=r.revision;renderEditor();notice('Pertanyaan disimpan sebagai revisi '+r.revision+'. Formulir responden yang masih terbuka perlu dimuat ulang.');}catch(e){err(e);}finally{busy(b,false,'Simpan perubahan');}};
+$('passwordForm').onsubmit=async e=>{e.preventDefault();if($('newPassword').value!==$('repeatPassword').value){notice('Ulangan kata sandi tidak sama.',true);return;}let b=e.target.querySelector('button');busy(b,true);try{await rpc('adminChangePassword',token,$('newPassword').value);exitAdmin();notice('Kata sandi diperbarui. Silakan login kembali.');}catch(e){err(e);}finally{busy(b,false);}};
+rpc('getPublicConfig').then(c=>{config=c;renderSurvey('A');}).catch(e=>{$('questions').textContent='Pertanyaan belum dapat dimuat.';err(e);});
+</script>

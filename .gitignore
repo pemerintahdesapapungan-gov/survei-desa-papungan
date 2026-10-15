@@ -1,0 +1,15 @@
+# Autentikasi Google
+.clasprc.json
+.clasp.json
+credentials.json
+client_secret*.json
+
+# File rahasia
+.env
+.env.*
+
+# Node.js
+node_modules/
+
+# Editor
+.vscode/
