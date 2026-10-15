@@ -1,0 +1,80 @@
+
+name: Deploy TEST Survei Desa Papungan
+
+on:
+  push:
+    branches:
+      - development
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: survei-desa-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy-staging:
+    name: Sinkronisasi Apps Script TEST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Ambil kode development
+        uses: actions/checkout@v4
+
+      - name: Siapkan Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Instal Google Clasp
+        run: npm install -g @google/clasp@3
+
+      - name: Periksa file Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f appsscript.json
+          node -e "JSON.parse(require('fs').readFileSync('appsscript.json', 'utf8'))"
+
+      - name: Konfigurasi Google TEST
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          STAGING_SCRIPT_ID: ${{ secrets.STAGING_SCRIPT_ID }}
+          PRODUCTION_SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$CLASPRC_JSON" ] || [ -z "$STAGING_SCRIPT_ID" ]; then
+            echo "::error::Secret staging belum lengkap"
+            exit 1
+          fi
+
+          if [ "$STAGING_SCRIPT_ID" = "$PRODUCTION_SCRIPT_ID" ]; then
+            echo "::error::Script ID TEST sama dengan produksi"
+            exit 1
+          fi
+
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          chmod 600 "$HOME/.clasprc.json"
+
+          node -e "
+            require('fs').writeFileSync(
+              '.clasp.json',
+              JSON.stringify({
+                scriptId: process.env.STAGING_SCRIPT_ID.trim()
+              }, null, 2)
+            );
+          "
+
+      - name: Periksa file staging
+        run: clasp show-file-status
+
+      - name: Perbarui kode Apps Script TEST
+        run: clasp push --force
+
+      - name: Selesai
+        run: echo "Kode Apps Script TEST berhasil diperbarui"
