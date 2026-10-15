@@ -71,5 +71,21 @@ jobs:
       - name: Perbarui kode Google Apps Script
         run: clasp push --force
 
+      - name: Perbarui Deployment Web App
+        shell: bash
+        env:
+          DEPLOYMENT_ID: ${{ secrets.DEPLOYMENT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$DEPLOYMENT_ID" ]; then
+            echo "::error::DEPLOYMENT_ID belum tersedia"
+            exit 1
+          fi
+
+          clasp create-deployment \
+            --deploymentId "$DEPLOYMENT_ID" \
+            --description "GitHub $GITHUB_SHA"
+
       - name: Selesai
         run: echo "Sinkronisasi Google Apps Script berhasil!"
